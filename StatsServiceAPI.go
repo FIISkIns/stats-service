@@ -73,7 +73,7 @@ func getCoursesProgress(userId string) (int, int, error) {
 func getUserStats(userId string) (*StatsItem, error) {
 	var stats StatsItem
 
-	err := database.QueryRow("select currentStreak, longestStreak, lastLoggedIn, timeSpent from stats where userId ="+userId).
+	err := database.QueryRow("select currentStreak, longestStreak, lastLoggedIn, timeSpent from stats where userId = ?", userId).
 		Scan(&stats.CurrentStreak, &stats.LongestStreak, &stats.LastLoggedIn, &stats.TimeSpent)
 
 	if err != nil {
@@ -181,12 +181,12 @@ func handlePingPost(w http.ResponseWriter, _ *http.Request, ps httprouter.Params
 			//update lastLoggedIn
 			stats.LastLoggedIn = currentTime.Format(time.RFC3339)
 
-			stmt, err := database.Prepare("UPDATE stats SET currentStreak = ?, longestStreak = ?, lastLoggedIn = ?, timeSpent = ? where userId = " + userId)
+			stmt, err := database.Prepare("UPDATE stats SET currentStreak = ?, longestStreak = ?, lastLoggedIn = ?, timeSpent = ? where userId = ?")
 			if err != nil {
 				http.Error(w, "SQL error: cannot prepare update statement", 500)
 				return
 			}
-			_, err = stmt.Exec(stats.CurrentStreak, stats.LongestStreak, stats.LastLoggedIn, stats.TimeSpent)
+			_, err = stmt.Exec(stats.CurrentStreak, stats.LongestStreak, stats.LastLoggedIn, stats.TimeSpent, userId)
 			if err != nil {
 				http.Error(w, "Database error: failed to update stats", 500)
 				return
