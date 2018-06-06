@@ -104,7 +104,7 @@ func getUserStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.P
 	}
 	stats, err := getUserStats(ps.ByName("user"))
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "User not found", 404)
 		return
 	}
 	if stats != nil {
@@ -147,8 +147,7 @@ func handlePingPost(w http.ResponseWriter, _ *http.Request, ps httprouter.Params
 	userId := ps.ByName("user")
 	response, err := getUserStats(userId)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+
 	}
 	if response != nil {
 		stats, err := getUserStats(ps.ByName("user"))
@@ -207,10 +206,36 @@ func handlePingPost(w http.ResponseWriter, _ *http.Request, ps httprouter.Params
 	}
 }
 
+func initDatabase() error {
+	err := database.Ping()
+	if err != nil {
+		return err
+	}
+	err = database.QueryRow("SELECT userId FROM stats LIMIT 1").Scan()
+	if err != nil && err != sql.ErrNoRows{
+		stmt, err := database.Prepare("create table stats (" +
+			"userId int primary key," +
+			"longestStreak int not null," +
+			"currentStreak int not null," +
+			"lastLoggedIn varchar(20) not null," +
+			"timeSpent int not null)")
+		if err != nil {
+			return err
+		}
+		_, err = stmt.Exec()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	initConfig()
-	//user:password@protocol(host_ip:host_port)/database
 	database, _ = sql.Open("mysql", config.DatabaseUrl)
+	if err := initDatabase(); err != nil {
+		log.Fatal(err)
+	}
 	defer database.Close()
 	router := httprouter.New()
 	router.GET("/:user", getUserStatsHandler)
