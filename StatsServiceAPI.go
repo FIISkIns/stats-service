@@ -211,7 +211,8 @@ func initDatabase() error {
 	if err != nil {
 		return err
 	}
-	err = database.QueryRow("SELECT userId FROM stats LIMIT 1").Scan()
+	var auxiliary int
+	err = database.QueryRow("SELECT userId FROM stats LIMIT 1").Scan(&auxiliary)
 	if err != nil && err != sql.ErrNoRows{
 		stmt, err := database.Prepare("create table stats (" +
 			"userId int primary key," +
