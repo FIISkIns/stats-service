@@ -2,124 +2,220 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/julienschmidt/httprouter"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
+	"sort"
+	"strconv"
+	"time"
 )
-
-type ProgressItem struct {
-	Course_id string `json:"course_id"`
-	Progress string `json:"progress"`
-	Task_id string `json:"task_id"`
-	User_id string `json:"user_id"`
-}
 
 var database *sql.DB
 
-func getJSON(sqlString string) ([]byte, error) {
-	rows, err := database.Query(sqlString)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	count := len(columns)
-	tableData := make([]map[string]interface{}, 0)
-	values := make([]interface{}, count)
-	valuePtrs := make([]interface{}, count)
-	for rows.Next() {
-		for i := 0; i < count; i++ {
-			valuePtrs[i] = &values[i]
-		}
-		rows.Scan(valuePtrs...)
-		entry := make(map[string]interface{})
-		for i, col := range columns {
-			var v interface{}
-			val := values[i]
-			b, ok := val.([]byte)
-			if ok {
-				v = string(b)
-			} else {
-				v = val
-			}
-			entry[col] = v
-		}
-		tableData = append(tableData, entry)
-	}
-	if len(tableData) == 0 {
-		return nil, nil
-	}
-	jsonData, err := json.Marshal(tableData)
-	if err != nil {
-		return nil, err
-	}
-
-	return jsonData, nil
+type ProgressItem struct {
+	CourseId string `json:"courseId"`
+	TaskId   string `json:"taskId"`
+	Progress string `json:"progress"`
 }
 
-func getUserStats(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+type StatsItem struct {
+	StartedCourses   int    `json:"startedCourses"`
+	CompletedCourses int    `json:"completedCourses"`
+	LastLoggedIn     string `json:"lastLoggedIn"`
+	TimeSpent        int    `json:"timeSpent"`
+	LongestStreak    int    `json:"longestStreak"`
+	CurrentStreak    int    `json:"-"`
+}
+
+func getCoursesProgress(userId string) (int, int, error) {
+	//CourseProgressService
+	resp, err := http.Get(config.CourseProgressServiceUrl + "/" + userId)
+	if err != nil {
+		return 0, 0, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+	progressItems := make([]ProgressItem, 0)
+	json.Unmarshal(body, &progressItems)
+	sort.Slice(progressItems, func(i, j int) bool { return progressItems[i].CourseId < progressItems[j].CourseId })
+	var noOfStartedCourses int
+	var noOfCompletedCourses int
+	var courseId string
+	var started bool
+	var completed bool
+	for i, item := range progressItems {
+		if courseId != item.CourseId || i == len(progressItems)-1 {
+			if started {
+				noOfStartedCourses++
+			}
+			if completed {
+				noOfCompletedCourses++
+			}
+			courseId = item.CourseId
+			started = false
+			completed = true
+		}
+		if item.Progress != "0" {
+			started = true
+		}
+		if item.Progress != "2" {
+			completed = false
+		}
+	}
+	return noOfStartedCourses, noOfCompletedCourses, nil
+}
+
+func getUserStats(userId string) (*StatsItem, error) {
+	var stats StatsItem
+
+	err := database.QueryRow("select currentStreak, longestStreak, lastLoggedIn, timeSpent from stats where userId ="+userId).
+		Scan(&stats.CurrentStreak, &stats.LongestStreak, &stats.LastLoggedIn, &stats.TimeSpent)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if stats.LastLoggedIn == "" {
+		return nil, nil
+	}
+
+	noOfStartedCourses, noOfCompletedCourses, err := getCoursesProgress(userId)
+
+	if err != nil {
+		return nil, err
+	}
+
+	stats.StartedCourses = noOfStartedCourses
+	stats.CompletedCourses = noOfCompletedCourses
+
+	return &stats, nil
+}
+
+func getUserStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
 	err := database.Ping()
 	if err != nil {
-		log.Fatal(err)
+		http.Error(w, "Database error: unable to connect", 500)
+		return
 	}
-	response, err := getJSON("select * from stats where user_id = " + ps.ByName("user"))
-	if  response != nil{
+	stats, err := getUserStats(ps.ByName("user"))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if stats != nil {
+		jsonData, err := json.Marshal(stats)
+		if err != nil {
+			http.Error(w, "JSON error: failed to marshal stats", 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(response)
+		w.Write(jsonData)
 	} else {
 		http.Error(w, "User not found", 404)
 	}
 }
 
-func handlePost(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	user := ps.ByName("user")
-	response, err := getJSON("select * from stats where user_id = " + user)
-	if err != nil {
-		log.Fatal(err)
+func isSameDay(firstDate, secondDate time.Time) bool {
+	if firstDate.Day() != secondDate.Day() {
+		return false
 	}
-	if response == nil {
-		stmt, err := database.Prepare("INSERT INTO stats(user_id, courses_completed, longest_streak, started_courses, " +
-			"last_logged_in, logged_in_since) VALUES(?, ?, ?, ?, ?, ?)")
+	if firstDate.Month() != secondDate.Month() {
+		return false
+	}
+	if firstDate.Year() != secondDate.Year() {
+		return false
+	}
+	return true
+}
+
+func isNextDay(firstDate, secondDate time.Time) bool {
+	firstDate.Add(time.Hour * 24)
+	return isSameDay(firstDate, secondDate)
+}
+
+func handlePingPost(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
+	err := database.Ping()
+	if err != nil {
+		http.Error(w, "Database error: unable to connect", 500)
+		return
+	}
+	userId := ps.ByName("user")
+	response, err := getUserStats(userId)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if response != nil {
+		stats, err := getUserStats(ps.ByName("user"))
 		if err != nil {
-			log.Fatal(err)
+			http.Error(w, "Database error: query on stats failed", 500)
+			return
 		}
-		_, err = stmt.Exec(user, 0, 0, 0, nil, nil)
+		if stats != nil {
+			currentTime := time.Now().UTC()
+			lastLoggedIn, err := time.Parse(time.RFC3339, stats.LastLoggedIn)
+			if err != nil {
+				http.Error(w, "Database error: lastLoggedIn wrong format\nNeeded format RFC3339", 500)
+				return
+			}
+			if isSameDay(lastLoggedIn, currentTime) {
+				//update timeSpent and lastLoggedIn
+				duration := int(currentTime.Sub(lastLoggedIn).Seconds())
+				if duration < 3600 {
+					stats.TimeSpent += duration
+				}
+			} else if isNextDay(lastLoggedIn, currentTime) {
+				//update currentStreak, possibly update longestStreak
+				stats.CurrentStreak++
+				if stats.CurrentStreak > stats.LongestStreak {
+					stats.LongestStreak = stats.CurrentStreak
+				}
+			} else {
+				stats.CurrentStreak = 0
+			}
+			//update lastLoggedIn
+			stats.LastLoggedIn = currentTime.Format(time.RFC3339)
+
+			stmt, err := database.Prepare("UPDATE stats SET currentStreak = ?, longestStreak = ?, lastLoggedIn = ?, timeSpent = ? where userId = " + userId)
+			if err != nil {
+				http.Error(w, "SQL error: cannot prepare update statement", 500)
+				return
+			}
+			_, err = stmt.Exec(stats.CurrentStreak, stats.LongestStreak, stats.LastLoggedIn, stats.TimeSpent)
+			if err != nil {
+				http.Error(w, "Database error: failed to update stats", 500)
+				return
+			}
+		}
+	} else {
+		stmt, err := database.Prepare("INSERT INTO stats(userId, longestStreak, currentStreak, lastLoggedIn , timeSpent)" +
+			" VALUES(?, ?, ?, ?, ?)")
 		if err != nil {
-			log.Fatal(err)
+			http.Error(w, "SQL error: failed to prepare insert statement", 500)
+			return
+		}
+		_, err = stmt.Exec(userId, 1, 1, time.Now().UTC().Format(time.RFC3339), 0)
+		if err != nil {
+			http.Error(w, "Database error: failed to insert into stats", 500)
+			return
 		}
 	}
-	resp, err := http.Get("http://localhost:8182/" + user)
-	if err != nil {
-		log.Fatal(err)
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println(err)
-	}
-	progressItems := make([]ProgressItem,0)
-	json.Unmarshal(body, &progressItems)
-	fmt.Fprintln(w, progressItems)
 }
 
 func main() {
+	initConfig()
 	//user:password@protocol(host_ip:host_port)/database
-	var err error
-	database, err = sql.Open("mysql", "stats-service:mysqlpassword@tcp(127.0.0.1:3306)/statsdb")
-	if err != nil{
-		log.Fatal(err)
-	}
+	database, _ = sql.Open("mysql", config.DatabaseUrl)
 	defer database.Close()
 	router := httprouter.New()
-	router.GET("/:user", getUserStats)
-	router.POST("/:user/ping", handlePost)
-	err = http.ListenAndServe(":8181", router)
+	router.GET("/:user", getUserStatsHandler)
+	router.POST("/:user/ping", handlePingPost)
+	err := http.ListenAndServe(":"+strconv.Itoa(config.Port), router)
 	if err != nil {
 		log.Fatal(err)
 	}

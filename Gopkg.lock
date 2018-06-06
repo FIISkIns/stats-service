@@ -14,6 +14,12 @@
   version = "v1.1"
 
 [[projects]]
+  name = "github.com/kelseyhightower/envconfig"
+  packages = ["."]
+  revision = "f611eb38b3875cc3bd991ca91c51d06446afa14c"
+  version = "v1.3.0"
+
+[[projects]]
   name = "google.golang.org/appengine"
   packages = ["cloudsql"]
   revision = "150dc57a1b433e64154302bdc40b6bb8aefa313a"
@@ -22,6 +28,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "634717560a580af96aca99d3e474d970f64c60e89a313d7a3cd429ad94cfbf0f"
+  inputs-digest = "7c17adc0efdb83b54a74f11ce4241aff54d2356c7ea30929770f66cf0f582e32"
   solver-name = "gps-cdcl"
   solver-version = 1
