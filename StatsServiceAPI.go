@@ -15,6 +15,18 @@ import (
 
 var database *sql.DB
 
+func New(text string) error {
+	return &errorString{text}
+}
+
+type errorString struct {
+	s string
+}
+
+func (e *errorString) Error() string {
+	return e.s
+}
+
 type ProgressItem struct {
 	CourseId string `json:"courseId"`
 	TaskId   string `json:"taskId"`
@@ -36,12 +48,18 @@ func getCoursesProgress(userId string) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	if resp.StatusCode != 200 {
+	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return 0, 0, err
 	}
+	return 0, 0, New("CourseProgressService: " + strconv.Itoa(resp.StatusCode) + "\nResponse: " + string(body))
 	progressItems := make([]ProgressItem, 0)
-	json.Unmarshal(body, &progressItems)
+	err = json.Unmarshal(body, &progressItems)
+	if err != nil {
+		return 0, 0, err
+	}
 	sort.Slice(progressItems, func(i, j int) bool { return progressItems[i].CourseId < progressItems[j].CourseId })
 	var noOfStartedCourses int
 	var noOfCompletedCourses int
@@ -80,10 +98,6 @@ func getUserStats(userId string) (*StatsItem, error) {
 		return nil, err
 	}
 
-	if stats.LastLoggedIn == "" {
-		return nil, nil
-	}
-
 	noOfStartedCourses, noOfCompletedCourses, err := getCoursesProgress(userId)
 
 	if err != nil {
@@ -96,7 +110,7 @@ func getUserStats(userId string) (*StatsItem, error) {
 	return &stats, nil
 }
 
-func getUserStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
+func getStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
 	err := database.Ping()
 	if err != nil {
 		http.Error(w, "Database error: unable to connect", 500)
@@ -104,20 +118,23 @@ func getUserStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.P
 	}
 	stats, err := getUserStats(ps.ByName("user"))
 	if err != nil {
-		http.Error(w, "User not found", 404)
+		if err == sql.ErrNoRows {
+			http.Error(w, "User not found", 404)
+		} else {
+			http.Error(w, "Cannot retrieve user stats: "+err.Error(), 500)
+		}
+
 		return
 	}
-	if stats != nil {
-		jsonData, err := json.Marshal(stats)
-		if err != nil {
-			http.Error(w, "JSON error: failed to marshal stats", 500)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(jsonData)
-	} else {
-		http.Error(w, "User not found", 404)
+
+	jsonData, err := json.Marshal(stats)
+	if err != nil {
+		http.Error(w, "JSON error: failed to marshal stats", 500)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonData)
+
 }
 
 func isSameDay(firstDate, secondDate time.Time) bool {
@@ -138,72 +155,68 @@ func isNextDay(firstDate, secondDate time.Time) bool {
 	return isSameDay(firstDate, secondDate)
 }
 
-func handlePingPost(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
+func pingPostHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
 	err := database.Ping()
 	if err != nil {
 		http.Error(w, "Database error: unable to connect", 500)
 		return
 	}
 	userId := ps.ByName("user")
-	response, err := getUserStats(userId)
+	stats, err := getUserStats(userId)
 	if err != nil {
-
-	}
-	if response != nil {
-		stats, err := getUserStats(ps.ByName("user"))
-		if err != nil {
-			http.Error(w, "Database error: query on stats failed", 500)
+		if err == sql.ErrNoRows {
+			stmt, err := database.Prepare("INSERT INTO stats(userId, longestStreak, currentStreak, lastLoggedIn , timeSpent)" +
+				" VALUES(?, ?, ?, ?, ?)")
+			if err != nil {
+				http.Error(w, "SQL error: failed to prepare insert statement", 500)
+				return
+			}
+			_, err = stmt.Exec(userId, 1, 1, time.Now().UTC().Format(time.RFC3339), 0)
+			if err != nil {
+				http.Error(w, "Database error: failed to insert into stats", 500)
+				return
+			}
+		} else {
+			http.Error(w, "Cannot retrieve user stats: "+err.Error(), 500)
 			return
-		}
-		if stats != nil {
-			currentTime := time.Now().UTC()
-			lastLoggedIn, err := time.Parse(time.RFC3339, stats.LastLoggedIn)
-			if err != nil {
-				http.Error(w, "Database error: lastLoggedIn wrong format\nNeeded format RFC3339", 500)
-				return
-			}
-			if isSameDay(lastLoggedIn, currentTime) {
-				//update timeSpent and lastLoggedIn
-				duration := int(currentTime.Sub(lastLoggedIn).Seconds())
-				if duration < 3600 {
-					stats.TimeSpent += duration
-				}
-			} else if isNextDay(lastLoggedIn, currentTime) {
-				//update currentStreak, possibly update longestStreak
-				stats.CurrentStreak++
-				if stats.CurrentStreak > stats.LongestStreak {
-					stats.LongestStreak = stats.CurrentStreak
-				}
-			} else {
-				stats.CurrentStreak = 0
-			}
-			//update lastLoggedIn
-			stats.LastLoggedIn = currentTime.Format(time.RFC3339)
-
-			stmt, err := database.Prepare("UPDATE stats SET currentStreak = ?, longestStreak = ?, lastLoggedIn = ?, timeSpent = ? where userId = ?")
-			if err != nil {
-				http.Error(w, "SQL error: cannot prepare update statement", 500)
-				return
-			}
-			_, err = stmt.Exec(stats.CurrentStreak, stats.LongestStreak, stats.LastLoggedIn, stats.TimeSpent, userId)
-			if err != nil {
-				http.Error(w, "Database error: failed to update stats", 500)
-				return
-			}
 		}
 	} else {
-		stmt, err := database.Prepare("INSERT INTO stats(userId, longestStreak, currentStreak, lastLoggedIn , timeSpent)" +
-			" VALUES(?, ?, ?, ?, ?)")
+		currentTime := time.Now().UTC()
+		lastLoggedIn, err := time.Parse(time.RFC3339, stats.LastLoggedIn)
 		if err != nil {
-			http.Error(w, "SQL error: failed to prepare insert statement", 500)
+			http.Error(w, "Database error: lastLoggedIn wrong format\nNeeded format RFC3339", 500)
 			return
 		}
-		_, err = stmt.Exec(userId, 1, 1, time.Now().UTC().Format(time.RFC3339), 0)
+		if isSameDay(lastLoggedIn, currentTime) {
+			//update timeSpent and lastLoggedIn
+			duration := int(currentTime.Sub(lastLoggedIn).Seconds())
+			if duration < 3600 {
+				stats.TimeSpent += duration
+			}
+		} else if isNextDay(lastLoggedIn, currentTime) {
+			//update currentStreak, possibly update longestStreak
+			stats.CurrentStreak++
+			if stats.CurrentStreak > stats.LongestStreak {
+				stats.LongestStreak = stats.CurrentStreak
+			}
+		} else {
+			stats.CurrentStreak = 0
+		}
+		//update lastLoggedIn
+		stats.LastLoggedIn = currentTime.Format(time.RFC3339)
+
+		stmt, err := database.Prepare("UPDATE stats SET currentStreak = ?, longestStreak = ?, lastLoggedIn = ?, timeSpent = ? where userId = ?")
 		if err != nil {
-			http.Error(w, "Database error: failed to insert into stats", 500)
+			http.Error(w, "SQL error: cannot prepare update statement", 500)
+			return
+		}
+		_, err = stmt.Exec(stats.CurrentStreak, stats.LongestStreak, stats.LastLoggedIn, stats.TimeSpent, userId)
+		if err != nil {
+			http.Error(w, "Database error: failed to update stats", 500)
 			return
 		}
 	}
+
 }
 
 func initDatabase() error {
@@ -213,7 +226,7 @@ func initDatabase() error {
 	}
 	var auxiliary int
 	err = database.QueryRow("SELECT userId FROM stats LIMIT 1").Scan(&auxiliary)
-	if err != nil && err != sql.ErrNoRows{
+	if err != nil && err != sql.ErrNoRows {
 		stmt, err := database.Prepare("create table stats (" +
 			"userId int primary key," +
 			"longestStreak int not null," +
@@ -239,8 +252,8 @@ func main() {
 	}
 	defer database.Close()
 	router := httprouter.New()
-	router.GET("/:user", getUserStatsHandler)
-	router.POST("/:user/ping", handlePingPost)
+	router.GET("/:user", getStatsHandler)
+	router.POST("/:user/ping", pingPostHandler)
 	err := http.ListenAndServe(":"+strconv.Itoa(config.Port), router)
 	if err != nil {
 		log.Fatal(err)
