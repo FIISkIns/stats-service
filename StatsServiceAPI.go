@@ -48,13 +48,13 @@ func getCoursesProgress(userId string) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	if resp.StatusCode != 200 {
-	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return 0, 0, err
 	}
-	return 0, 0, New("CourseProgressService: " + strconv.Itoa(resp.StatusCode) + "\nResponse: " + string(body))
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, New("CourseProgressService: " + strconv.Itoa(resp.StatusCode) + "\nResponse: " + string(body))
+	}
 	progressItems := make([]ProgressItem, 0)
 	err = json.Unmarshal(body, &progressItems)
 	if err != nil {
@@ -134,7 +134,6 @@ func getStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Param
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jsonData)
-
 }
 
 func isSameDay(firstDate, secondDate time.Time) bool {
