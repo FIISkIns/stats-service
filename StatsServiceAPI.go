@@ -78,10 +78,10 @@ func getCoursesProgress(userId string) (int, int, error) {
 			started = false
 			completed = true
 		}
-		if item.Progress != "0" {
+		if item.Progress != "not started" {
 			started = true
 		}
-		if item.Progress != "2" {
+		if item.Progress != "completed" {
 			completed = false
 		}
 	}
@@ -114,6 +114,7 @@ func getStatsHandler(w http.ResponseWriter, _ *http.Request, ps httprouter.Param
 	err := database.Ping()
 	if err != nil {
 		http.Error(w, "Database error: unable to connect", 500)
+		log.Println(err)
 		return
 	}
 	stats, err := getUserStats(ps.ByName("user"))
