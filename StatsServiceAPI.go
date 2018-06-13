@@ -235,7 +235,7 @@ func initDatabase() error {
 	err := database.QueryRow("SELECT userId FROM stats LIMIT 1").Scan(&auxiliary)
 	if err != nil && err != sql.ErrNoRows {
 		stmt, err := database.Prepare("create table stats (" +
-			"userId int primary key," +
+			"userId varchar(100) primary key," +
 			"longestStreak int not null," +
 			"currentStreak int not null," +
 			"lastLoggedIn varchar(20) not null," +
