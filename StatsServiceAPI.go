@@ -266,7 +266,7 @@ func checkHealth(w http.ResponseWriter, url string) bool {
 		http.Error(w, errorMessage, http.StatusInternalServerError)
 		return false
 	}
-	if resp.StatusCode != http.StatusOK {
+	if (resp.StatusCode / 100) != 2 {
 		errorMessage := "Failed health check on: " + url + "\nResponse: " + string(body)
 		log.Println(errorMessage)
 		http.Error(w, errorMessage, http.StatusInternalServerError)
