@@ -295,8 +295,9 @@ func main() {
 	}
 	defer database.Close()
 	router := httprouter.New()
+	router.GET("/health", healthCheckHandler)
+	router.HEAD("/health", healthCheckHandler)
 	router.GET("/stats/:user", getStatsHandler)
 	router.POST("/stats/:user/ping", pingPostHandler)
-	router.GET("/health", healthCheckHandler)
 	log.Fatal(http.ListenAndServe(":"+strconv.Itoa(config.Port), router))
 }
